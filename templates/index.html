@@ -3,16 +3,248 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Python App</title>
+    <title>Tetris Game</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-    <script>
-        const socket = io();
-        socket.on('reload', () => {
-            window.location.reload();
-        });
-    </script>
+    <style>
+        canvas {
+            border: 2px solid black;
+            display: block;
+            margin: 0 auto;
+        }
+        .game-container {
+            text-align: center;
+            padding: 20px;
+        }
+        #score, #level, #lines {
+            font-size: 24px;
+            margin: 10px;
+        }
+        .game-info {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+    </style>
 </head>
 <body>
-    <h1>This is a test!!</h1>
+    <div class="game-container">
+        <div class="game-info">
+            <div id="score">Score: 0</div>
+            <div id="level">Level: 1</div>
+            <div id="lines">Lines: 0</div>
+        </div>
+        <canvas id="gameCanvas" width="300" height="600"></canvas>
+    </div>
+    <script>
+        const socket = io();
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const blockSize = 30;
+        const cols = canvas.width / blockSize;
+        const rows = canvas.height / blockSize;
+        
+        let board = Array(rows).fill().map(() => Array(cols).fill(0));
+        let score = 0;
+        let level = 1;
+        let lines = 0;
+        let gameLoop;
+        let currentPiece;
+        let gameOver = false;
+
+        const colors = [
+            null,
+            '#FF0000', // Red
+            '#00FF00', // Green
+            '#0000FF', // Blue
+            '#FFFF00', // Yellow
+            '#00FFFF', // Cyan
+            '#FF00FF', // Magenta
+            '#FFA500'  // Orange
+        ];
+
+        const pieces = [
+            [], // Empty piece for index alignment
+            [[1, 1, 1, 1]], // I
+            [[1, 1], [1, 1]], // O
+            [[0, 1, 1], [1, 1, 0]], // S
+            [[1, 1, 0], [0, 1, 1]], // Z
+            [[1, 0, 0], [1, 1, 1]], // L
+            [[0, 0, 1], [1, 1, 1]], // J
+            [[0, 1, 0], [1, 1, 1]]  // T
+        ];
+
+        class Piece {
+            constructor(shape, color) {
+                this.shape = shape;
+                this.color = color;
+                this.x = Math.floor(cols / 2) - Math.floor(shape[0].length / 2);
+                this.y = 0;
+            }
+
+            rotate() {
+                const newShape = this.shape[0].map((_, i) =>
+                    this.shape.map(row => row[i]).reverse()
+                );
+                if (this.isValid(this.x, this.y, newShape)) {
+                    this.shape = newShape;
+                }
+            }
+
+            isValid(testX, testY, shape = this.shape) {
+                for (let y = 0; y < shape.length; y++) {
+                    for (let x = 0; x < shape[y].length; x++) {
+                        if (shape[y][x]) {
+                            const newX = testX + x;
+                            const newY = testY + y;
+                            if (newX < 0 || newX >= cols || newY >= rows) return false;
+                            if (newY >= 0 && board[newY][newX]) return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
+        function createNewPiece() {
+            const pieceType = Math.floor(Math.random() * 7) + 1;
+            return new Piece([...pieces[pieceType]], colors[pieceType]);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw board
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    if (board[y][x]) {
+                        ctx.fillStyle = colors[board[y][x]];
+                        ctx.fillRect(x * blockSize, y * blockSize, blockSize - 1, blockSize - 1);
+                    }
+                }
+            }
+
+            // Draw current piece
+            if (currentPiece) {
+                ctx.fillStyle = currentPiece.color;
+                for (let y = 0; y < currentPiece.shape.length; y++) {
+                    for (let x = 0; x < currentPiece.shape[y].length; x++) {
+                        if (currentPiece.shape[y][x]) {
+                            ctx.fillRect(
+                                (currentPiece.x + x) * blockSize,
+                                (currentPiece.y + y) * blockSize,
+                                blockSize - 1,
+                                blockSize - 1
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Draw grid
+            ctx.strokeStyle = '#CCCCCC';
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    ctx.strokeRect(x * blockSize, y * blockSize, blockSize, blockSize);
+                }
+            }
+        }
+
+        function mergePiece() {
+            for (let y = 0; y < currentPiece.shape.length; y++) {
+                for (let x = 0; x < currentPiece.shape[y].length; x++) {
+                    if (currentPiece.shape[y][x]) {
+                        if (currentPiece.y + y <= 0) {
+                            return false; // Game over
+                        }
+                        board[currentPiece.y + y][currentPiece.x + x] = pieces.indexOf(pieces.find(p => 
+                            JSON.stringify(p) === JSON.stringify(currentPiece.shape)));
+                    }
+                }
+            }
+            return true;
+        }
+
+        function clearLines() {
+            let linesCleared = 0;
+            for (let y = rows - 1; y >= 0; y--) {
+                if (board[y].every(cell => cell !== 0)) {
+                    board.splice(y, 1);
+                    board.unshift(Array(cols).fill(0));
+                    linesCleared++;
+                    y++; // Check the same row again
+                }
+            }
+            if (linesCleared > 0) {
+                lines += linesCleared;
+                score += linesCleared * 100 * level;
+                level = Math.floor(lines / 10) + 1;
+                updateScore();
+            }
+        }
+
+        function updateScore() {
+            document.getElementById('score').textContent = `Score: ${score}`;
+            document.getElementById('level').textContent = `Level: ${level}`;
+            document.getElementById('lines').textContent = `Lines: ${lines}`;
+        }
+
+        function gameStep() {
+            if (!currentPiece) {
+                currentPiece = createNewPiece();
+                if (!currentPiece.isValid(currentPiece.x, currentPiece.y)) {
+                    gameOver = true;
+                    alert('Game Over! Score: ' + score);
+                    clearInterval(gameLoop);
+                    return;
+                }
+            }
+
+            if (currentPiece.isValid(currentPiece.x, currentPiece.y + 1)) {
+                currentPiece.y++;
+            } else {
+                if (!mergePiece()) {
+                    gameOver = true;
+                    alert('Game Over! Score: ' + score);
+                    clearInterval(gameLoop);
+                    return;
+                }
+                clearLines();
+                currentPiece = null;
+            }
+            draw();
+        }
+
+        document.addEventListener('keydown', (event) => {
+            if (gameOver) return;
+
+            switch(event.key) {
+                case 'ArrowLeft':
+                    if (currentPiece.isValid(currentPiece.x - 1, currentPiece.y)) {
+                        currentPiece.x--;
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (currentPiece.isValid(currentPiece.x + 1, currentPiece.y)) {
+                        currentPiece.x++;
+                    }
+                    break;
+                case 'ArrowDown':
+                    if (currentPiece.isValid(currentPiece.x, currentPiece.y + 1)) {
+                        currentPiece.y++;
+                    }
+                    break;
+                case 'ArrowUp':
+                    currentPiece.rotate();
+                    break;
+            }
+            draw();
+        });
+
+        // Start the game
+        currentPiece = createNewPiece();
+        gameLoop = setInterval(gameStep, 1000 / level);
+        draw();
+    </script>
 </body>
 </html>
